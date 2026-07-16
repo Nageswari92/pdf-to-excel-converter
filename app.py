@@ -4,88 +4,102 @@ import pandas as pd
 import io
 import zipfile
 
-st.set_page_config(page_title="ZIP to Excel ZIP Converter", page_icon="📦", layout="centered")
+st.set_page_config(page_title="PDF to Excel Converter", page_icon="📦", layout="centered")
 
-st.title("📦 ZIP of PDFs to Excel ZIP Converter")
-st.write("PDF பைல்கள் அடங்கிய ஒரு ZIP பைலை அப்லோட் செய்யவும். அவை அனைத்தும் எக்செல் பைல்களாக மாற்றப்பட்டு, ஒரே ZIP பைலாக டவுன்லோட் செய்யக் கிடைக்கும்!")
+st.title("📦 PDF Tables to Excel Converter")
+st.write("Upload a single PDF file or a ZIP archive containing multiple PDFs. The app will extract tables and convert them to Excel format.")
 
-# ZIP பைலை அப்லோட் செய்ய அனுமதிக்கிறது
-uploaded_file = st.file_uploader("Choose a ZIP file containing PDFs...", type=["zip"], accept_multiple_files=False)
+# Allows uploading either a single PDF file or a single ZIP file containing PDFs
+uploaded_file = st.file_uploader(
+    "Choose a PDF file or a ZIP file containing PDFs...", 
+    type=["pdf", "zip"], 
+    accept_multiple_files=False
+)
+
+# Helper function to extract tables from a PDF stream
+def extract_tables_from_pdf(pdf_stream):
+    all_tables_df = []
+    with pdfplumber.open(pdf_stream) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                df = pd.DataFrame(table)
+                if not df.empty:
+                    df.columns = df.iloc[0]
+                    df = df[1:]
+                    all_tables_df.append(df)
+    if all_tables_df:
+        return pd.concat(all_tables_df, ignore_index=True)
+    return None
 
 if uploaded_file:
-    st.info("ZIP file uploaded successfully. Processing...")
+    st.info("File uploaded successfully. Processing...")
+    file_name = uploaded_file.name.lower()
     
-    if st.button("Extract, Convert & Pack into ZIP"):
-        # அவுட்புட் ZIP பைலை மெமரியில் உருவாக்குவதற்கான பப்பர்
-        output_zip_buffer = io.BytesIO()
-        successful_conversions = 0
+    if st.button("Extract & Convert"):
         
-        try:
-            # அப்லோட் செய்யப்பட்ட input ZIP பைலை ஓபன் செய்கிறோம்
-            with zipfile.ZipFile(uploaded_file, "r") as input_zip:
-                # ZIP-க்குள் இருக்கும் அனைத்து பைல்களின் பெயர்கள்
-                file_list = input_zip.namelist()
+        # Scenario 1: User uploaded a single PDF file
+        if file_name.endswith('.pdf'):
+            try:
+                pdf_stream = io.BytesIO(uploaded_file.read())
+                combined_df = extract_tables_from_pdf(pdf_stream)
                 
-                # .pdf என்று முடியும் பைல்களை மட்டும் வடிகட்டுகிறோம்
-                pdf_files = [f for f in file_list if f.lower().endswith('.pdf')]
-                
-                if not pdf_files:
-                    st.error("No PDF files found inside the uploaded ZIP!")
+                if combined_df is not None:
+                    excel_buffer = io.BytesIO()
+                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                        combined_df.to_excel(writer, sheet_name='Data', index=False)
+                    
+                    st.success("Successfully converted PDF into Excel!")
+                    st.download_button(
+                        label="📥 Download Excel File",
+                        data=excel_buffer.getvalue(),
+                        file_name=uploaded_file.name.rsplit('.', 1)[0] + ".xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
                 else:
-                    # புதிய அவுட்புட் ZIP பைலை எழுதத் தொடங்குகிறோம்
-                    with zipfile.ZipFile(output_zip_buffer, "w", zipfile.ZIP_DEFLATED) as output_zip:
-                        
-                        for pdf_name in pdf_files:
-                            all_tables_df = []
-                            
-                            # ZIP-க்குள் இருக்கும் PDF பைலை மெமரியிலேயே படிக்கிறோம்
-                            pdf_data = input_zip.read(pdf_name)
-                            pdf_stream = io.BytesIO(pdf_data)
-                            
-                            # PDF-ல் இருந்து டேபிள்களை எடுக்கிறது
-                            with pdfplumber.open(pdf_stream) as pdf:
-                                for page in pdf.pages:
-                                    tables = page.extract_tables()
-                                    for table in tables:
-                                        df = pd.DataFrame(table)
-                                        if not df.empty:
-                                            df.columns = df.iloc[0]
-                                            df = df[1:]
-                                            all_tables_df.append(df)
-                            
-                            # டேபிள்கள் இருந்தால் மட்டுமே எக்செல் பைலாக மாற்றும்
-                            if all_tables_df:
-                                combined_df = pd.concat(all_tables_df, ignore_index=True)
-                                
-                                # எக்செல் பைலை மெமரியில் உருவாக்குகிறது
-                                excel_buffer = io.BytesIO()
-                                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                                    combined_df.to_excel(writer, sheet_name='Data', index=False)
-                                
-                                excel_data = excel_buffer.getvalue()
-                                
-                                # பழைய PDF பெயரின் நீட்சியை மாற்றி எக்செல் பெயராக மாற்றுகிறது 
-                                # (e.g., folder/sample.pdf -> folder/sample.xlsx)
-                                excel_filename = pdf_name.rsplit('.', 1)[0] + ".xlsx"
-                                
-                                # எக்செல் பைலை புதிய ZIP-க்குள் சேர்க்கிறது
-                                output_zip.writestr(excel_filename, excel_data)
-                                successful_conversions += 1
+                    st.error("No tables found in the uploaded PDF file!")
+            except Exception as e:
+                st.error(f"An error occurred while processing the PDF: {e}")
+                
+        # Scenario 2: User uploaded a ZIP file containing PDFs
+        elif file_name.endswith('.zip'):
+            output_zip_buffer = io.BytesIO()
+            successful_conversions = 0
             
-            # ஏதேனும் பைல்கள் கன்வெர்ட் ஆகியிருந்தால் டவுன்லோட் பட்டனை காட்டும்
-            if successful_conversions > 0:
-                st.success(f"Successfully converted {successful_conversions} PDF(s) into Excel!")
-                
-                final_zip_data = output_zip_buffer.getvalue()
-                
-                st.download_button(
-                    label="📥 Download Converted Excel Files (ZIP)",
-                    data=final_zip_data,
-                    file_name="converted_excel_files.zip",
-                    mime="application/zip"
-                )
-            else:
-                st.error("No tables found in any of the PDFs inside the ZIP!")
-                
-        except zipfile.BadZipFile:
-            st.error("The uploaded file is not a valid ZIP file.")
+            try:
+                with zipfile.ZipFile(uploaded_file, "r") as input_zip:
+                    file_list = input_zip.namelist()
+                    pdf_files = [f for f in file_list if f.lower().endswith('.pdf')]
+                    
+                    if not pdf_files:
+                        st.error("No PDF files found inside the uploaded ZIP archive!")
+                    else:
+                        with zipfile.ZipFile(output_zip_buffer, "w", zipfile.ZIP_DEFLATED) as output_zip:
+                            for pdf_name in pdf_files:
+                                pdf_data = input_zip.read(pdf_name)
+                                pdf_stream = io.BytesIO(pdf_data)
+                                combined_df = extract_tables_from_pdf(pdf_stream)
+                                
+                                if combined_df is not None:
+                                    excel_buffer = io.BytesIO()
+                                    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                                        combined_df.to_excel(writer, sheet_name='Data', index=False)
+                                    
+                                    excel_data = excel_buffer.getvalue()
+                                    excel_filename = pdf_name.rsplit('.', 1)[0] + ".xlsx"
+                                    output_zip.writestr(excel_filename, excel_data)
+                                    successful_conversions += 1
+                                    
+                if successful_conversions > 0:
+                    st.success(f"Successfully converted {successful_conversions} PDF(s) into Excel inside ZIP!")
+                    st.download_button(
+                        label="📥 Download Converted Excel Files (ZIP)",
+                        data=output_zip_buffer.getvalue(),
+                        file_name="converted_excel_files.zip",
+                        mime="application/zip"
+                    )
+                else:
+                    st.error("No tables found in any of the PDFs inside the ZIP archive!")
+                    
+            except zipfile.BadZipFile:
+                st.error("The uploaded file is not a valid ZIP file.")
